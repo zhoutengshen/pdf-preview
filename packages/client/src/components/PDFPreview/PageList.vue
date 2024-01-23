@@ -3,13 +3,14 @@ import * as pdfjsLib from 'pdfjs-dist'
 import * as workerSrc from 'pdfjs-dist/build/pdf.worker'
 import { usePdfProgress } from './hooks'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
-import { ref, onMounted } from 'vue'
+import { ref, watch } from 'vue'
 import { createExposureObserver } from '@/utils/index'
-
+import ToolBar from './ToolBar.vue'
+import Progress from './Progress.vue'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc
 
-const scaleFactor = 1.5
+const scaleFactor = ref(1.5)
 enum RenderStatus {
   RENDERING = 'rendering',
   RENDERED = 'rendered',
@@ -25,20 +26,23 @@ const props = withDefaults(defineProps<{
   maxHeight: '100vh'
 })
 
-var loadingTask = pdfjsLib.getDocument({
-  url: props.url,
-  disableAutoFetch: true,
-  disableStream: true,
-  // 指定最小加载字节数
-  rangeChunkSize: 66 * 1024,
-})
-const { progress } = usePdfProgress(loadingTask)
+const { progress, initPdfProgress } = usePdfProgress()
 const pageListRef = ref<HTMLElement | null>(null)
 let pdfDocument: PDFDocumentProxy | null = null
 let observer: IntersectionObserver | null = null;
 
 
-onMounted(() => {
+function initDocument(url: string = props.url) {
+  if (!url) {
+    return
+  }
+  const loadingTask = pdfjsLib.getDocument({
+    url: url,
+    disableAutoFetch: true,
+    disableStream: true,
+    // 指定最小加载字节数
+    rangeChunkSize: 66 * 1024,
+  })
   // 注册交叉观察者，用于按需渲染页面
   observer = createExposureObserver(0.5, (entry) => {
     const target = entry.target as HTMLElement
@@ -53,12 +57,13 @@ onMounted(() => {
   loadingTask.promise.then(function (pdf) {
     pdfDocument = pdf
     // 初始化渲染，用于渲染第一个页面和创建所有的空页面
-    initRender(pdf)
+    initRenderPage(pdf)
   }, function (reason) {
     // PDF loading error
     console.error(reason)
   })
-})
+  initPdfProgress(loadingTask)
+}
 
 // 创建空的 canvas 标签
 function insertEmptyCanvas(
@@ -80,11 +85,17 @@ function insertEmptyCanvas(
     }
   }
   pageIndexList.forEach(pageIndex => {
+    const pageId = pageIdGenerator(pageIndex)
+    const pageEl = document.querySelector(`#${pageId}`)
+    if (pageEl instanceof HTMLCanvasElement) {
+      created(pageEl)
+      return
+    }
     const canvas = document.createElement('canvas')
     const divTag = document.createElement('div')
     divTag.appendChild(canvas)
     // 用于渲染
-    canvas.id = pageIdGenerator(pageIndex)
+    canvas.id = pageId
     // 用于渲染
     canvas.dataset.pageNumber = String(pageIndex)
     // 用于页码
@@ -99,15 +110,15 @@ function insertEmptyCanvas(
   })
 }
 
-function renderPage(pdf: PDFDocumentProxy, num: number, selector: string) {
-  const canvas = document.querySelector(selector) as HTMLCanvasElement
+function renderPage(pdf: PDFDocumentProxy, num: number, selector: string | HTMLCanvasElement) {
+  const canvas = selector instanceof HTMLCanvasElement ? selector : document.querySelector(selector) as HTMLCanvasElement
   const canvasParent = canvas.parentElement as HTMLElement
   if (!canvas) {
     return Promise.reject('canvas not found')
   }
   return new Promise<HTMLCanvasElement>((resolve, reject) => {
     pdf.getPage(num).then(page => {
-      const viewport = page.getViewport({ scale: scaleFactor })
+      const viewport = page.getViewport({ scale: scaleFactor.value })
       page.getTextContent().then((textContent) => {
         if (textContent.items.length <= 0) {
           return
@@ -140,7 +151,6 @@ function renderPage(pdf: PDFDocumentProxy, num: number, selector: string) {
     })
   })
 }
-
 
 /**
  *  提前渲染前后两个Page
@@ -186,7 +196,7 @@ function preRenderPage(
   }
 }
 
-function initRender(pdf: PDFDocumentProxy) {
+function initRenderPage(pdf: PDFDocumentProxy) {
   // 插入并渲染第一个页面
   const initFirstPage = (pdf: PDFDocumentProxy) => {
     return new Promise<HTMLCanvasElement>((resolve, reject) => {
@@ -207,6 +217,8 @@ function initRender(pdf: PDFDocumentProxy) {
     insertEmptyCanvas(pageIndexList.slice(1), pageListRef.value, (canvas) => {
       canvas.height = parentHeight
       canvas.width = parentWidth
+      // 先解除观察，再观察
+      observer?.unobserve(canvas)
       observer?.observe(canvas as HTMLElement)
     })
   })
@@ -219,13 +231,49 @@ function initRender(pdf: PDFDocumentProxy) {
 function pageIdGenerator(num: number) {
   return `PAGE_${num}`
 }
+
+function handleZoomIn() {
+  scaleFactor.value -= 0.1
+  if (pdfDocument) {
+    initRenderPage(pdfDocument)
+  }
+}
+
+function handleZoomOut() {
+  scaleFactor.value += 0.1
+  if (pdfDocument) {
+    initRenderPage(pdfDocument)
+  }
+}
+
+function handleFileSelected(file: Blob) {
+  const fileUrl = URL.createObjectURL(file)
+  clearPageListChildren()
+  initDocument(fileUrl)
+}
+
+function clearPageListChildren() {
+  const pageList = pageListRef.value
+  if (pageList) {
+    pageList.innerHTML = ''
+  }
+}
+
+watch(() => props.url, (newUrl) => {
+  initDocument(newUrl)
+  clearPageListChildren()
+}, { immediate: true })
 </script>
 
 <template>
   <div class="pdf-container" :style="{
     '--scale-factor': scaleFactor,
   }">
-    <div class="progress"></div>
+    <div class="sticker">
+      <Progress :progress="progress"></Progress>
+      <ToolBar @file-selected="handleFileSelected" :zoom="scaleFactor" @zoom-in="handleZoomIn"
+        @zoom-out="handleZoomOut" />
+    </div>
     <div class="page-list" ref="pageListRef"></div>
   </div>
 </template>
@@ -239,26 +287,12 @@ function pageIdGenerator(num: number) {
   box-sizing: border-box;
   --primary-color: #409eff;
 
-  .progress {
+  .sticker {
     position: sticky;
-    top: 8px;
+    top: 0;
     left: 0;
-    --height: 4px;
-    width: 100%;
-    height: var(--height);
-    border-radius: var(--height);
-    overflow: hidden;
     z-index: 1;
-
-    &::after {
-      content: '';
-      display: block;
-      width: calc(v-bind(progress) * 100%);
-      height: 100%;
-      background-color: var(--primary-color);
-      transition: width 0.3s;
-      border-radius: var(--height);
-    }
+    background-color: #eee;
   }
 
   .page-list {

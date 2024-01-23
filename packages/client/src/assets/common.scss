@@ -4,3 +4,8 @@
 .circle-loading {
   @include loading-icon(50px, 50px, 5px, #fff, #000);
 }
+
+.disable-select {
+  user-select: none;
+  cursor: default;
+}
