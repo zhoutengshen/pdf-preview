@@ -1,0 +1,6 @@
+@import './mixin.scss';
+// 公共样式
+
+.circle-loading {
+  @include loading-icon(50px, 50px, 5px, #fff, #000);
+}

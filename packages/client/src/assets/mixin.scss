@@ -1,0 +1,30 @@
+// 菊花 圈圈 loading
+@mixin loading-icon($size: 50px,
+  $border: 5px,
+  $color: #fff,
+  $bg-color: #000,
+  $progress-color: #000) {
+
+  width: $size;
+  height: $size;
+  border-radius: 50%;
+
+  border: {
+    width: $border;
+    style: solid;
+    color: $color;
+  }
+
+  border-top-color: $progress-color;
+  animation: loading 1s infinite linear;
+
+  @keyframes loading {
+    from {
+      transform: rotate(0deg);
+    }
+
+    to {
+      transform: rotate(360deg);
+    }
+  }
+}
